@@ -1,27 +1,28 @@
-from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import altair as alt
+from tqdm import tqdm
 import os
 
-
-def create_invert_map(l):
-    return {v:i for i,v in enumerate(l)}
+def create_invert_map(lst):
+    return {v: i for i, v in enumerate(lst)}
 
 class BlackJack:
-    #variables declaration
+
     cards = ["A", 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
-    agent_sums = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
-    dealers_cards = ["A", 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    ace_usability = [False, True]  # Referenced as 0, 1
-    actions_possible = ["S", "H"]  # Referenced as 0, 1
+
+    agent_sums = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21] 
+    dealers_cards = ["A", 2, 3, 4, 5, 6, 7, 8, 9, 10]  
+    ace_usability = [False, True]  
+    actions_possible = ["S", "H"]  
 
     agent_sums_map, dealers_cards_map, ace_usability_map, actions_map, cards_map = map(
         create_invert_map,
         [agent_sums, dealers_cards, ace_usability, actions_possible, cards],
     )
 
-    def __init__(self, M, epsilon, alpha, seed=0):
+    def __init__(self, M, epsilon, alpha, seed=0,):
+
         self.seed = seed
         self.M = M
         self.epsilon = epsilon
@@ -30,94 +31,102 @@ class BlackJack:
         self.initialize()
 
     def initialize(self):
-        #define q
-        self.Q = np.zeros((len(self.agent_sums), len(self.dealers_cards), len(self.ace_usability), len(self.actions_possible)))
-        self.C = np.zeros_like(self.Q, dtype=int) # for counting
-        if not os.path.exists('data') :
-            os.mkdir("data")
+        self.Q = np.zeros(
+            (
+                len(self.agent_sums),
+                len(self.dealers_cards),
+                len(self.ace_usability),
+                len(self.actions_possible),
+            )
+        )
+        
+        self.C = np.zeros_like(self.Q, dtype=int)
+
+        if not os.path.exists('data'):
+            os.mkdir('data')
 
     def sample_cards(self, N):
-        #Draws N samples for the infinite 13 card deck.
-        sample_cards = np.random.choice(self.cards, size=N, replace=True)
-        return [c if c=="A" else int(c) for c in sample_cards]
-    
+        """Draws N samples for the infinite 13 card deck."""
+        sampled_cards = np.random.choice(self.cards, size=N, replace=True)
+        return [c if c == "A" else int(c) for c in sampled_cards]
+
     def map_to_indices(self, agent_sum, dealers_card, useable_ace):
-        #Map from agent_sum (12-21), dealers_card(ace-10) and useable_ace (True, False) to the indices of Q
+        """Map from agent_sum (12-21), dealers_card(ace-10) and useable_ace (True, False) to the indices of Q."""
         return (
             self.agent_sums_map[agent_sum],
             self.dealers_cards_map[dealers_card],
             self.ace_usability_map[useable_ace],
         )
-    
-    def behavior_policy(self, agent_sum, dealers_card, useable_ace):
-        #Returns H (Hit) or S (Stick) to determine the actions to take during the game.
-        agent_sum_idx, dealers_card_idx, useable_ace_idx = self.map_to_indices(agent_sum, dealers_card, useable_ace)
-        greedy_action = self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx].argmax()
 
+    def behavior_policy(self, agent_sum, dealers_card, useable_ace):
+        """Returns H (Hit) or S (Stick) to determine the actions to take during the game."""
+        agent_sum_idx, dealers_card_idx, useable_ace_idx = self.map_to_indices(
+            agent_sum, dealers_card, useable_ace
+        )
+        greedy_action = self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx, :].argmax()
         do_greedy = np.random.binomial(1, 1 - self.epsilon + (self.epsilon / 2))
         if do_greedy:
             return self.actions_possible[int(greedy_action)]
         else:
             return self.actions_possible[int(not greedy_action)]
-    
+
     def target_policy(self, agent_sum, dealers_card, useable_ace):
-        #Now it's on-policy learning so it's the sam as behavior policy
-        return self.behavior_policy(
-            agent_sum=agent_sum, dealers_card=dealers_card, useable_ace=useable_ace
-        )
+        return self.behavior_policy(agent_sum=agent_sum, dealers_card=dealers_card, useable_ace=useable_ace)
 
     def is_ratio(self, states_remaining, actions_remaining):
-        #The Importance Sampling ratio that can be overwritten for off policy control.
+        """The Importance Sampling ratio that can be overwritten for off policy control."""
         return 1
-    
+
     @staticmethod
     def calc_sum_useable_ace(cards):
-        #Returns the sum-value of cards and whether there is a useable ace
+        """Returns the sum-value of cards and whether there is a useable ace"""
         cards_sum = sum([c for c in cards if c != "A"])
         ace_count = len([c for c in cards if c == "A"])
 
         if ace_count == 0:
             return cards_sum, False
-        else :
-            cards_sum_0 = cards_sum + ace_count
-            cards_sum_1 = cards_sum + 10 + ace_count
+        else:
+            cards_sum_0 = cards_sum + ace_count  # 0 aces count as 11
+            cards_sum_1 = cards_sum + 10 + ace_count  # 1 ace counts as 11
 
-            if cards_sum_1 > 21 :
+            if cards_sum_1 > 21:
                 return cards_sum_0, False
+
             return cards_sum_1, True
-    
 
     def play_game(self):
-
-        agent_cards = self.sample_cards(2)
-        dealers_card = self.sample_cards(1)[0]
+        
+        agent_cards = self.sample_cards(2)  # Agent is delt 2 cards
+        dealers_card = self.sample_cards(1)[0]  # Dealer is (effectively) delt 1 cards
 
         states = [[agent_cards, dealers_card]]
         actions = []
 
-        #hit until agent_sum >=12
+        # Hit until agent_sum >= 12
         while True:
             agent_cards, dealers_card = states[-1]
+
             agent_sum, _ = self.calc_sum_useable_ace(agent_cards)
-            if agent_sum < 12 :
+            if agent_sum < 12:
                 actions.append("H")
                 agent_cards_next = agent_cards + self.sample_cards(1)
                 states.append([agent_cards_next, dealers_card])
-            else: 
+            else:
                 break
 
         # Play game according to agents policy
         while True:
             agent_cards, dealers_card = states[-1]
-            agent_sum , useable_ace = self.calc_sum_useable_ace(agent_cards)
+            agent_sum, useable_ace = self.calc_sum_useable_ace(agent_cards)
 
-            action = self.behabior_policy(agent_sum, dealers_card, useable_ace)
+            action = self.behavior_policy(
+                agent_sum=agent_sum, dealers_card=dealers_card, useable_ace=useable_ace
+            )
             actions.append(action)
-
             if action == "S":
                 states.append([agent_cards, dealers_card])
                 break
-            else :
+            else:
                 agent_cards_next = agent_cards + self.sample_cards(1)
                 states.append([agent_cards_next, dealers_card])
 
@@ -129,21 +138,23 @@ class BlackJack:
                     how = "bust"
                     reward = -1
                     return states, actions, reward, how
-        #Dealer play
-        dealers_cards = states[-1][1] + self.sample_cards(1)
-        while True :
-            dealers_sum, _ = self.calc_sum_useable_ace(dealers_card)
+
+        # Dealer plays
+        dealers_cards = [states[-1][1]] + self.sample_cards(1)  # Turn over card
+        while True:
+            dealers_sum, _ = self.calc_sum_useable_ace(dealers_cards)
             if dealers_sum > 21:
-                how = "dealers bust : " + ",".join([str(c) for c in dealers_cards]) 
+                how = "dealer_bust:" + ",".join([str(c) for c in dealers_cards])
                 reward = 1
                 return states, actions, reward, how
             if dealers_sum > 16:
                 break
-            else: 
+            else:
                 dealers_cards += self.sample_cards(1)
 
         agent_sum, useable_ace = self.calc_sum_useable_ace(states[-1][0])
 
+        # If the game hasn't already ended, determine the winner.
         if agent_sum == dealers_sum:
             return states, actions, 0, f"{agent_sum} = {dealers_sum}"
         elif agent_sum > dealers_sum:
@@ -152,7 +163,7 @@ class BlackJack:
             return states, actions, -1, f"{agent_sum} < {dealers_sum}"
 
     def get_hyper_str(self):
-        #Returns a string uniquely identifying the class arguments.
+        """Returns a string uniquely identifying the class arguments."""
         return f"M{self.M}__epsilon{str(self.epsilon).replace('.', '_')}__alpha{str(self.alpha).replace('.', '_')}__seed{str(self.seed)}"
 
     def get_file_names(self):
@@ -183,10 +194,12 @@ class BlackJack:
             print("No Q hist to load")
 
     def _get_ms(self):
-        #Returns a list of episodes index's (sometimes called 'm's) for which we record action-value pairs.
+        """Returns a list of episodes index's (sometimes called 'm's) for which we record action-value pairs."""
         return list(range(0, self.M + 1, 1000))
 
     def mc_control(self, track_history=True):
+
+        """Return the algorithm to learn the Q-table."""
 
         self.initialize()
         np.random.seed(self.seed)
@@ -194,14 +207,15 @@ class BlackJack:
         Q_hist = []
         ms = self._get_ms()
 
-        for m in tqdm(range(self.M+1)):
-            states , actions, reward, how = self.play_game()
+        for m in tqdm(range(self.M + 1)):
+            states, actions, reward, how = self.play_game()
 
             if track_history:
                 if m in ms:
                     Q_hist.append(self.get_df("Q").assign(m=m))
 
             for i, (state, action) in enumerate(zip(states[:-1], actions)):
+
                 agent_cards, dealers_card = state
                 agent_sum, useable_ace = self.calc_sum_useable_ace(agent_cards)
 
@@ -211,26 +225,30 @@ class BlackJack:
                 agent_sum_idx, dealers_card_idx, useable_ace_idx = self.map_to_indices(
                     agent_sum, dealers_card, useable_ace
                 )
-
                 actions_idx = self.actions_map[action]
 
-                q_val = self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx]
+                q_val = self.Q[
+                    agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx
+                ]
 
                 rho = self.is_ratio(states[i + 1 :], actions[i + 1 :])
 
-                self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx] = q_val + self.alpha*(rho*reward-q_val)
+                self.Q[
+                    agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx
+                ] = q_val + self.alpha * (rho * reward - q_val)
 
                 self.C[
                     agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx
                 ] += 1
-
 
         if track_history:
             self.Q_hist = pd.concat(Q_hist, axis=0)
 
         self.save()
 
-    def plot_over_m(self, agent_sum, dealers_card, useable_ace, width=400, height=200, **kwargs):
+    def plot_over_m(
+        self, agent_sum, dealers_card, useable_ace, width=400, height=200, **kwargs
+    ):
         """Creates a line plot of the action-value of hit and stick as episodes are processed. Note: we don't record
         action-value after every episodes, so not all action-values are shown."""
 
@@ -323,3 +341,53 @@ class BlackJack:
         return chart.properties(height=height, width=width).facet(
             row="action", column="useable_ace"
         )
+
+
+class BlackJackOffPolicy(BlackJack):
+
+    """
+    Very similar to the BlackJack object, except this uses an off-policy approach.
+
+    You can change the behavior_policy method to experiment with different behavior policies.
+    """
+
+    def __init__(
+        self, M, alpha, seed=0,
+    ):
+
+        self.seed = seed
+        self.M = M
+        self.alpha = alpha
+        self.Q_hist = None
+        self.initialize()
+
+    def behavior_policy(self, agent_sum, dealers_card, useable_ace):
+        """Behavior policy is to select hit or stick with a 50/50 probability."""
+        return np.random.choice(self.actions_possible)
+
+    def target_policy(self, agent_sum, dealers_card, useable_ace):
+        agent_sum_idx, dealers_card_idx, useable_ace_idx = self.map_to_indices(
+            agent_sum, dealers_card, useable_ace
+        )
+        greedy_action = self.Q[
+            agent_sum_idx, dealers_card_idx, useable_ace_idx, :
+        ].argmax()
+        return self.actions_possible[greedy_action]
+
+    def get_hyper_str(self):
+        return f"M{self.M}__OP__alpha{str(self.alpha).replace('.', '_')}__seed{str(self.seed)}"
+
+    def is_ratio(self, states_remaining, actions_remaining):
+        """
+        In this case, the target policy is deterministic, so the importance sampling ratio will only be nonzero when the
+        deterministic policy would have target that action.
+
+        """
+        for state, action in zip(states_remaining, actions_remaining):
+            agent_cards, dealers_card = state
+            agent_sum, useable_ace = self.calc_sum_useable_ace(agent_cards)
+            target_action = self.target_policy(agent_sum, dealers_card, useable_ace)
+            if target_action != action:
+                return 0.0
+
+        return 1.0 / (0.5 ** len(actions_remaining))
