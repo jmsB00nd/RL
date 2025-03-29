@@ -31,7 +31,7 @@ class BlackJack:
 
     def initialize(self):
         #define q
-        self.Q = np.zeros(len(self.agent_sums), len(self.dealers_cards), len(self.ace_usability), len(self.actions_possible))
+        self.Q = np.zeros((len(self.agent_sums), len(self.dealers_cards), len(self.ace_usability), len(self.actions_possible)))
         self.C = np.zeros_like(self.Q, dtype=int) # for counting
         if not os.path.exists('data') :
             os.mkdir("data")
@@ -49,7 +49,7 @@ class BlackJack:
             self.ace_usability_map[useable_ace],
         )
     
-    def behabior_policy(self, agent_sum, dealers_card, useable_ace):
+    def behavior_policy(self, agent_sum, dealers_card, useable_ace):
         #Returns H (Hit) or S (Stick) to determine the actions to take during the game.
         agent_sum_idx, dealers_card_idx, useable_ace_idx = self.map_to_indices(agent_sum, dealers_card, useable_ace)
         greedy_action = self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx].argmax()
@@ -186,3 +186,140 @@ class BlackJack:
         #Returns a list of episodes index's (sometimes called 'm's) for which we record action-value pairs.
         return list(range(0, self.M + 1, 1000))
 
+    def mc_control(self, track_history=True):
+
+        self.initialize()
+        np.random.seed(self.seed)
+
+        Q_hist = []
+        ms = self._get_ms()
+
+        for m in tqdm(range(self.M+1)):
+            states , actions, reward, how = self.play_game()
+
+            if track_history:
+                if m in ms:
+                    Q_hist.append(self.get_df("Q").assign(m=m))
+
+            for i, (state, action) in enumerate(zip(states[:-1], actions)):
+                agent_cards, dealers_card = state
+                agent_sum, useable_ace = self.calc_sum_useable_ace(agent_cards)
+
+                if agent_sum < 12:
+                    continue
+
+                agent_sum_idx, dealers_card_idx, useable_ace_idx = self.map_to_indices(
+                    agent_sum, dealers_card, useable_ace
+                )
+
+                actions_idx = self.actions_map[action]
+
+                q_val = self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx]
+
+                rho = self.is_ratio(states[i + 1 :], actions[i + 1 :])
+
+                self.Q[agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx] = q_val + self.alpha*(rho*reward-q_val)
+
+                self.C[
+                    agent_sum_idx, dealers_card_idx, useable_ace_idx, actions_idx
+                ] += 1
+
+
+        if track_history:
+            self.Q_hist = pd.concat(Q_hist, axis=0)
+
+        self.save()
+
+    def plot_over_m(self, agent_sum, dealers_card, useable_ace, width=400, height=200, **kwargs):
+        """Creates a line plot of the action-value of hit and stick as episodes are processed. Note: we don't record
+        action-value after every episodes, so not all action-values are shown."""
+
+        if dealers_card == "A":
+            dealers_card = f"'{dealers_card}'"
+
+        df = self.Q_hist.query(
+            f"(agent_sum == {agent_sum}) & (dealers_card == {dealers_card}) & (useable_ace == {useable_ace})"
+        )[["Q", "action", "m"]]
+
+        return (
+            alt.Chart(df)
+            .mark_line(**kwargs)
+            .encode(x="m", y="Q", color="action")
+            .properties(height=height, width=width)
+        )
+
+    def make_slice_df(self, Q_or_C_slice, name):
+        df = pd.DataFrame(
+            Q_or_C_slice, index=self.agent_sums, columns=self.dealers_cards
+        )
+        df.index.name = "agent_sum"
+        df.columns.name = "dealers_card"
+        return df.stack().to_frame(name)
+
+    def get_df(self, which="Q"):
+
+        assert which in ["Q", "C"]
+
+        array = getattr(self, which)
+
+        df = []
+        for idx1 in [0, 1]:
+            for idx2 in [0, 1]:
+
+                slc = array[:, :, idx1, idx2]
+                slc_df = self.make_slice_df(slc, which)
+
+                if which == "Q":
+                    opt = array.argmax(-1)[:, :, idx1]
+                    is_opt = opt == idx2
+
+                    slc_df = pd.concat(
+                        [slc_df, self.make_slice_df(is_opt.astype(int), "opt")], axis=1
+                    )
+
+                slc_df = slc_df.reset_index().assign(
+                    useable_ace=self.ace_usability[idx1],
+                    action=self.actions_possible[idx2],
+                )
+                df.append(slc_df)
+
+        return pd.concat(df, axis=0)
+
+    def plot(self, which="Q", height=200, width=350):
+        """Returns 2-by-2 grid of heatmaps giving either the action values or the counts each state-action pair was visited."""
+
+        assert which in ["Q", "C"]
+
+        df = self.get_df(which)
+
+        if "Q" in df.columns:
+            col = "Q"
+            color = alt.Color(col, scale=alt.Scale(domain=[-1, 1]))
+        else:
+            col = "C"
+            color = alt.Color(col)
+
+        heatmap = (
+            alt.Chart(df)
+            .mark_rect()
+            .encode(x="agent_sum:O", y="dealers_card:O", color=color,)
+        )
+        df["rounded"] = df[col].round(2)
+
+        args = dict(x="agent_sum:O", y="dealers_card:O", text="rounded")
+        txt = alt.Chart(df).mark_text().encode(**args)
+
+        if which == "Q":
+            opt = (
+                alt.Chart(df)
+                .mark_rect(fill=None, strokeWidth=2, stroke="green")
+                .encode(x="agent_sum:O", y="dealers_card:O")
+                .transform_filter(alt.datum.opt == 1)
+            )
+            chart = heatmap + opt + txt
+        else:
+            chart = heatmap + txt
+
+        return chart.properties(height=height, width=width).facet(
+            row="action", column="useable_ace"
+        )
